@@ -14,6 +14,7 @@ on:
           - 'oneplus_ace5_pro'
           - 'oneplus_ace_6'
           - 'oneplus_13t'
+          - 'oneplus_pad_2  '
           - 'oneplus_pad_2_pro'
           - 'oneplus_ace5_ultra'
           - 'realme_GT7'
@@ -108,6 +109,11 @@ jobs:
               echo "REPO_MANIFEST=sm8750_b_16.0.0_oneplus_13t" >> $GITHUB_ENV
               echo "SCHED_FILE=oneplus_13t_b" >> $GITHUB_ENV
               ;;
+            oneplus_pad_2)
+              echo "REPO_MANIFEST=mt6991_b_16.0.0_pad_2" >> $GITHUB_ENV
+              echo "IMAGENAME=Image_Op_Pad_2" >> $GITHUB_ENV
+              echo "SCHED_FILE=oneplus_pad2_mt6991_b" >> $GITHUB_ENV
+              ;;
             oneplus_pad_2_pro)
               echo "REPO_MANIFEST=sm8750_b_16.0.0_pad_2_pro" >> $GITHUB_ENV
               echo "SCHED_FILE=oneplus_pad_2_pro_b" >> $GITHUB_ENV
@@ -140,7 +146,7 @@ jobs:
             oneplus_ace5_ultra)
                 DEFAULT_SUFFIX='-android15-8-ge6068c2aa11d-abogki454747580-4k'
               ;;
-            oneplus_13 | oneplus_13t | oneplus_ace5_pro | oneplus_ace_6 | realme_GT7 | realme_GT7pro_Speed | realme_GT8)
+            oneplus_13 | oneplus_13t | oneplus_ace5_pro | oneplus_ace_6 | oneplus_pad_2 | realme_GT7 | realme_GT7pro_Speed | realme_GT8)
                 DEFAULT_SUFFIX='-android15-8-g7e1f3c083cc6-abogki467167594-4k'
               ;;
             realme_GT7pro)
@@ -166,7 +172,7 @@ jobs:
               oneplus_ace5_ultra)
                   KERNEL_TIME='Tue Jul 1 19:48:18 UTC 2025'
                 ;;
-              oneplus_13 | oneplus_13t | oneplus_ace5_pro | oneplus_ace_6 | realme_GT7 | realme_GT7pro_Speed | realme_GT8)
+              oneplus_13 | oneplus_13t | oneplus_ace5_pro | oneplus_ace_6 | oneplus_pad_2 |realme_GT7 | realme_GT7pro_Speed | realme_GT8)
                   KERNEL_TIME='Mon Dec 8 04:00:43 UTC 2025'
                 ;;
               realme_GT7pro)
@@ -229,22 +235,29 @@ jobs:
             sed -i '$i res=$(echo "$res" | sed '\''s/-dirty//g'\'')' "$f"
           done
 
-      - name: 🛠 Set ccache DIR(配置ccache目录)
+      - name: 🛠 Set ccache DIR(配置 ccache 目录)
         run: |
           echo "CCACHE_DIR=$HOME/.ccache_${{ env.DEVICES_NAME }}" >> $GITHUB_ENV
           echo "CCACHE_MAXSIZE=10G" >> $GITHUB_ENV
+          # 根据影响源码的功能开关生成缓存变体后缀，避免不同变体互相污染
+          CACHE_VARIANT=""
+          if [ "${{ env.ENABLE_DROIDSPACES }}" = "true" ]; then
+            CACHE_VARIANT="${CACHE_VARIANT}-ds"
+          fi
+          echo "CACHE_VARIANT=$CACHE_VARIANT" >> $GITHUB_ENV
+          echo "当前构建内核机型：${{ env.DEVICES_NAME }}，缓存变体：${CACHE_VARIANT:-(无)}"
           echo "当前磁盘空间："
           df -h
-          echo "当前构建内核机型：${{ env.DEVICES_NAME }}"
 
-      - name: 📥 Restore ccache (载入当前机型的ccache缓存)
+      - name: 📥 Restore ccache (载入当前机型的 ccache 缓存)
         id: ccache-restore
         uses: actions/cache/restore@v5
         with:
           path: ${{ env.CCACHE_DIR }}
-          key: ccache-ECS-${{ env.DEVICES_NAME }}-latest
+          key: ccache-${{ env.DEVICES_NAME }}${{ env.CACHE_VARIANT }}-latest
           restore-keys: |
-            ccache-ECS-${{ env.DEVICES_NAME }}-
+            ccache-${{ env.DEVICES_NAME }}${{ env.CACHE_VARIANT }}-
+            ccache-${{ env.DEVICES_NAME }}-
 
       - name: 🔎 Find public ccache in releases (查找公共缓存)
         id: public-ccache
@@ -254,22 +267,29 @@ jobs:
           PUBLIC_CACHE_REPO: ${{ vars.PUBLIC_CACHE_REPO }}
           PUBLIC_CACHE_TAG: ${{ vars.PUBLIC_CACHE_TAG }}
           DEVICE_NAME: ${{ env.DEVICES_NAME }}
+          CACHE_VARIANT: ${{ env.CACHE_VARIANT }}
         with:
           script: |
             const repoName = process.env.PUBLIC_CACHE_REPO || 'showdo/Public_Ccache';
             const releaseTag = process.env.PUBLIC_CACHE_TAG || 'exported-ccaches';
             const [owner, repo] = repoName.split('/');
             const deviceName = process.env.DEVICE_NAME;
+            const cacheVariant = process.env.CACHE_VARIANT || '';
             let selected = null;
 
-            const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-            const exactAssetName = `ccache-${deviceName}.tar.zst`;
-            const legacyAssetPattern = new RegExp(`^ccache-(.+-)?${escapeRegex(deviceName)}(-[0-9]+)?\\.tar\\.zst$`);
+            const escape_regex = (value) => value.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&');
+            // 优先精确匹配带变体的资产，其次匹配不带变体的
+            const variantExactName = `ccache-${deviceName}${cacheVariant}.tar.zst`;
+            const plainExactName = `ccache-${deviceName}.tar.zst`;
+            // 有变体时仅匹配变体缓存，不降级到非变体（不同变体的缓存无法互相命中）
+            const priorityAssets = cacheVariant ? [variantExactName] : [plainExactName];
+            const legacyAssetPattern = new RegExp(`^ccache-(.+-)?${escape_regex(deviceName)}(-[0-9]+)?\\.tar\\.zst$`);
 
-            core.info(`当前仓库无匹配 ccache，开始按机型查找公共缓存: ${deviceName}`);
-            core.info(`缓存来源仓库: ${owner}/${repo}`);
-            core.info(`缓存来源标签: ${releaseTag}`);
-            core.info(`优先匹配公共缓存文件: ${exactAssetName}`);
+            core.info(`当前仓库无匹配 ccache，开始按机型查找公共缓存：${deviceName}`);
+            core.info(`缓存变体：${cacheVariant || '(无)'}`);
+            core.info(`缓存来源仓库：${owner}/${repo}`);
+            core.info(`缓存来源标签：${releaseTag}`);
+            core.info(`优先匹配公共缓存文件：${priorityAssets.join(', ')}`);
 
             let release;
             try {
@@ -285,13 +305,16 @@ jobs:
             }
 
             for (const asset of release.assets || []) {
-              const isExactMatch = asset.name === exactAssetName;
+              const priorityIndex = priorityAssets.indexOf(asset.name);
+              const isExactMatch = priorityIndex !== -1;
               const isLegacyMatch = legacyAssetPattern.test(asset.name);
               if (isExactMatch || isLegacyMatch) {
+                // 带变体的精确匹配优先级最高（priorityIndex=0），其次不带变体（priorityIndex=1），最后是 legacy
                 const shouldReplace =
                   !selected ||
+                  (isExactMatch && (!selected.exact || priorityIndex < (selected.priority ?? 99))) ||
                   (isExactMatch && !selected.exact) ||
-                  (isExactMatch === selected.exact && new Date(asset.updated_at) > new Date(selected.updated_at));
+                  (!isExactMatch && !selected.exact && new Date(asset.updated_at) > new Date(selected.updated_at));
 
                 if (shouldReplace) {
                   selected = {
@@ -300,6 +323,7 @@ jobs:
                     tag: release.tag_name,
                     repo: `${owner}/${repo}`,
                     exact: isExactMatch,
+                    priority: isExactMatch ? priorityIndex : 99,
                   };
                 }
               }
@@ -310,7 +334,7 @@ jobs:
               return;
             }
 
-            core.info(`找到公共缓存: ${selected.name} (${selected.repo}@${selected.tag})`);
+            core.info(`找到公共缓存：${selected.name} (${selected.repo}@${selected.tag})`);
             core.setOutput('asset-name', selected.name);
             core.setOutput('release-tag', selected.tag);
             core.setOutput('source-repo', selected.repo);
@@ -324,7 +348,7 @@ jobs:
           PUBLIC_CACHE_ASSET: ${{ steps.public-ccache.outputs.asset-name }}
         run: |
           set -euo pipefail
-          echo "当前仓库无匹配缓存，开始下载公共缓存: $PUBLIC_CACHE_ASSET"
+          echo "当前仓库无匹配缓存，开始下载公共缓存：$PUBLIC_CACHE_ASSET"
           rm -f "$PUBLIC_CACHE_ASSET"
           rm -rf "$CCACHE_DIR"
           gh release download "$PUBLIC_CACHE_TAG" --repo "$PUBLIC_CACHE_REPO" --pattern "$PUBLIC_CACHE_ASSET" --dir .
@@ -344,11 +368,10 @@ jobs:
           test -d "$CCACHE_DIR"
           ls -lah "$CCACHE_DIR" | head -n 20
           echo "PUBLIC_CCACHE_USED=true" >> "$GITHUB_ENV"
-          echo "公共缓存恢复完成: $CCACHE_DIR"
+          echo "公共缓存恢复完成：$CCACHE_DIR"
       
-      - name: 📥 Init ccache (初始化配置ccache)
+      - name: 📥 Init ccache (初始化配置 ccache)
         run: |
-          # 设置ccache环境变量
           export CCACHE_COMPILERCHECK="none"
           export CCACHE_BASEDIR="${{ github.workspace }}"
           export CCACHE_NOHASHDIR="true"
@@ -356,21 +379,17 @@ jobs:
           export CCACHE_DIR="${{ env.CCACHE_DIR }}"
           export CCACHE_MAXSIZE="${{ env.CCACHE_MAXSIZE }}"
           
-          # 确保ccache目录存在
           mkdir -p "$CCACHE_DIR"
           
-          # 每次运行都重新配置缓存大小
-          echo "配置ccache缓存大小为: $CCACHE_MAXSIZE"
+          echo "配置 ccache 缓存大小为：$CCACHE_MAXSIZE"
           ccache -M "$CCACHE_MAXSIZE"
           ccache -o compression=true
           
-          # 显示初始缓存状态
-          echo "ccache初始状态:"
+          echo "ccache 初始状态:"
           ccache -s
           
-          # 如果缓存恢复命中，显示详细信息
           if [ -n "${{ steps.ccache-restore.outputs.cache-matched-key }}" ]; then
-            echo "ccache缓存命中详情: ${{ steps.ccache-restore.outputs.cache-matched-key }}"
+            echo "ccache 缓存命中详情：${{ steps.ccache-restore.outputs.cache-matched-key }}"
             ccache -sv
           elif [ "${PUBLIC_CCACHE_USED:-false}" = 'true' ]; then
             echo "已恢复公共 ccache，当前缓存详情:"
@@ -378,7 +397,7 @@ jobs:
           else
             echo "未命中仓库缓存，也未找到公共缓存，将从空缓存开始构建"
           fi
-      
+
       - name: 🔧 Apply Sched Patch (应用完美风驰补丁)
         run: |
           if [ "$SCHED_FILE" = "none" ]; then
@@ -671,14 +690,14 @@ jobs:
         uses: actions/cache/save@v5
         with:
           path: ${{ env.CCACHE_DIR }}
-          key: ccache-ECS-${{ env.DEVICES_NAME }}-${{ github.run_id }}
+          key: ccache-${{ env.DEVICES_NAME }}${{ env.CACHE_VARIANT }}-${{ github.run_id }}
 
       - name: 🧹 Clean old ccache (清理旧缓存)
         if: env.BUILD_TIME > 480
         uses: actions/github-script@v8
         env:
-          PREFIX: ccache-ECS-${{ env.DEVICES_NAME }}-
-          CURRENT_KEY: ccache-ECS-${{ env.DEVICES_NAME }}-${{ github.run_id }}
+          PREFIX: ccache-${{ env.DEVICES_NAME }}${{ env.CACHE_VARIANT }}-
+          CURRENT_KEY: ccache-${{ env.DEVICES_NAME }}${{ env.CACHE_VARIANT }}-${{ github.run_id }}
         with:
           script: |
             const { owner, repo } = context.repo;
@@ -687,8 +706,8 @@ jobs:
             let page = 1;
             let deleted = 0;
 
-            core.info('构建时间超过8分钟，已保存ccache缓存');
-            core.info(`正在清理旧缓存，匹配前缀: ${prefix}`);
+            core.info('构建时间超过 8 分钟，已保存 ccache 缓存');
+            core.info(`正在清理旧缓存，匹配前缀：${prefix}`);
 
             while (true) {
               const response = await github.rest.actions.getActionsCacheList({
